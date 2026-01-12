@@ -41,6 +41,8 @@ func main() {
 		log.Fatalf("store init: %v", err)
 	}
 
+	bootstrapMemoryUser(st)
+
 	app := &App{Store: st}
 
 	mux := http.NewServeMux()
@@ -157,6 +159,37 @@ func clientIPTrusted(r *http.Request) string {
 		return remoteHost
 	}
 	return "0.0.0.0"
+}
+
+func bootstrapMemoryUser(st store.Store) {
+	memory, ok := st.(*store.MemoryStore)
+	if !ok {
+		return
+	}
+
+	username := strings.TrimSpace(os.Getenv("BOOTSTRAP_USER"))
+	if username == "" {
+		return
+	}
+
+	var hash string
+	if rawHash := strings.TrimSpace(os.Getenv("BOOTSTRAP_HASH")); rawHash != "" {
+		hash = rawHash
+	} else if password := os.Getenv("BOOTSTRAP_PASSWORD"); password != "" {
+		generated, err := auth.HashPassword(password)
+		if err != nil {
+			log.Printf("bootstrap hash error: %v", err)
+			return
+		}
+		hash = generated
+	}
+
+	if hash == "" {
+		log.Printf("bootstrap user set without password/hash")
+		return
+	}
+
+	memory.AddUser(username, hash, true)
 }
 
 func getenv(key, fallback string) string {

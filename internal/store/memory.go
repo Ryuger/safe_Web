@@ -32,6 +32,12 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
+func (m *MemoryStore) AddUser(username, passwordHash string, active bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.users[username] = User{Username: username, PasswordHash: passwordHash, IsActive: active}
+}
+
 func (m *MemoryStore) IsBanned(ip string, now time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
