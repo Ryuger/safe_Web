@@ -1,9 +1,10 @@
 CREATE TABLE users (
-    id            BIGSERIAL PRIMARY KEY,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    is_active     BOOLEAN NOT NULL DEFAULT true,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                  BIGSERIAL PRIMARY KEY,
+    username            TEXT UNIQUE NOT NULL,
+    password_hash       TEXT NOT NULL,
+    is_active           BOOLEAN NOT NULL DEFAULT true,
+    password_changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE login_attempts (

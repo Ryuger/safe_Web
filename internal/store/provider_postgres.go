@@ -50,9 +50,9 @@ func (p *PostgresStore) IsBanned(ip string, now time.Time) (bool, error) {
 func (p *PostgresStore) GetUser(username string) (*User, error) {
 	var user User
 	err := p.db.QueryRow(
-		`SELECT username, password_hash, is_active FROM users WHERE username = $1`,
+		`SELECT username, password_hash, is_active, password_changed_at FROM users WHERE username = $1`,
 		username,
-	).Scan(&user.Username, &user.PasswordHash, &user.IsActive)
+	).Scan(&user.Username, &user.PasswordHash, &user.IsActive, &user.PasswordChangedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +108,14 @@ func (p *PostgresStore) InsertAudit(eventType, actor, ip, details string, now ti
 	_, err := p.db.Exec(
 		`INSERT INTO audit_log (event_type, actor, ip, details, created_at) VALUES ($1,$2,$3,$4::jsonb,$5)`,
 		eventType, actor, ip, details, now,
+	)
+	return err
+}
+
+func (p *PostgresStore) UpdatePassword(username, passwordHash string, changedAt time.Time) error {
+	_, err := p.db.Exec(
+		`UPDATE users SET password_hash = $1, password_changed_at = $2 WHERE username = $3`,
+		passwordHash, changedAt, username,
 	)
 	return err
 }

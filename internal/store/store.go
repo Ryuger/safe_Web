@@ -3,9 +3,10 @@ package store
 import "time"
 
 type User struct {
-	Username     string
-	PasswordHash string
-	IsActive     bool
+	Username          string
+	PasswordHash      string
+	IsActive          bool
+	PasswordChangedAt time.Time
 }
 
 type Store interface {
@@ -15,4 +16,5 @@ type Store interface {
 	CheckConsecutiveFailures(ip string, window time.Duration, limit int, now time.Time) (bool, error)
 	UpsertBan(ip string, ttl time.Duration, reason string, now time.Time) error
 	InsertAudit(eventType, actor, ip, details string, now time.Time) error
+	UpdatePassword(username, passwordHash string, changedAt time.Time) error
 }

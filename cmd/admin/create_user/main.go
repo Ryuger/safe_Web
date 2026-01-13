@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"time"
 
 	"safe_web/internal/auth"
 )
@@ -23,8 +24,9 @@ func main() {
 	}
 
 	fmt.Printf(
-		"INSERT INTO users (username, password_hash, is_active) VALUES ('%s', '%s', true);\n",
+		"INSERT INTO users (username, password_hash, is_active, password_changed_at) VALUES ('%s', '%s', true, '%s');\n",
 		*username,
 		hash,
+		time.Now().UTC().Format(time.RFC3339),
 	)
 }

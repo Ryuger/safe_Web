@@ -33,10 +33,10 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (m *MemoryStore) AddUser(username, passwordHash string, active bool) {
+func (m *MemoryStore) AddUser(username, passwordHash string, active bool, changedAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.users[username] = User{Username: username, PasswordHash: passwordHash, IsActive: active}
+	m.users[username] = User{Username: username, PasswordHash: passwordHash, IsActive: active, PasswordChangedAt: changedAt}
 }
 
 func (m *MemoryStore) IsBanned(ip string, now time.Time) (bool, error) {
@@ -97,6 +97,19 @@ func (m *MemoryStore) InsertAudit(eventType, actor, ip, details string, now time
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	log.Printf("audit event=%s actor=%s ip=%s details=%s", eventType, actor, ip, details)
+	return nil
+}
+
+func (m *MemoryStore) UpdatePassword(username, passwordHash string, changedAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	user, ok := m.users[username]
+	if !ok {
+		return errors.New("not found")
+	}
+	user.PasswordHash = passwordHash
+	user.PasswordChangedAt = changedAt
+	m.users[username] = user
 	return nil
 }
 
