@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"log"
 	"sync"
 	"time"
 )
@@ -41,6 +42,7 @@ func (m *MemoryStore) AddUser(username, passwordHash string, active bool) {
 func (m *MemoryStore) IsBanned(ip string, now time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneBans(now)
 	ban, ok := m.bans[ip]
 	if !ok {
 		return false, nil
@@ -68,6 +70,7 @@ func (m *MemoryStore) InsertAttempt(ip, username string, success bool, now time.
 func (m *MemoryStore) CheckConsecutiveFailures(ip string, window time.Duration, limit int, now time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneAttempts(now.Add(-window))
 	count := 0
 	cutoff := now.Add(-window)
 	for i := len(m.attempts) - 1; i >= 0 && count < limit; i-- {
@@ -93,5 +96,29 @@ func (m *MemoryStore) UpsertBan(ip string, ttl time.Duration, reason string, now
 func (m *MemoryStore) InsertAudit(eventType, actor, ip, details string, now time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	log.Printf("audit event=%s actor=%s ip=%s details=%s", eventType, actor, ip, details)
 	return nil
+}
+
+func (m *MemoryStore) pruneBans(now time.Time) {
+	for ip, ban := range m.bans {
+		if !ban.until.After(now) {
+			delete(m.bans, ip)
+		}
+	}
+}
+
+func (m *MemoryStore) pruneAttempts(cutoff time.Time) {
+	if len(m.attempts) == 0 {
+		return
+	}
+
+	idx := 0
+	for _, attempt := range m.attempts {
+		if attempt.at.After(cutoff) {
+			m.attempts[idx] = attempt
+			idx++
+		}
+	}
+	m.attempts = m.attempts[:idx]
 }
