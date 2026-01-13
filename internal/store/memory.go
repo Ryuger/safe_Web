@@ -8,10 +8,16 @@ import (
 )
 
 type MemoryStore struct {
-	mu       sync.Mutex
-	users    map[string]User
-	attempts []loginAttempt
-	bans     map[string]ipBan
+	mu          sync.Mutex
+	users       map[string]User
+	adminUsers  map[string]AdminUser
+	attempts    []loginAttempt
+	bans        map[string]ipBan
+	clients     map[int64]Client
+	clientCerts map[int64]ClientCert
+	tokens      map[int64]EnrollToken
+	audit       []AuditEntry
+	nextID      int64
 }
 
 type loginAttempt struct {
@@ -28,8 +34,12 @@ type ipBan struct {
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		users: map[string]User{},
-		bans:  map[string]ipBan{},
+		users:       map[string]User{},
+		adminUsers:  map[string]AdminUser{},
+		bans:        map[string]ipBan{},
+		clients:     map[int64]Client{},
+		clientCerts: map[int64]ClientCert{},
+		tokens:      map[int64]EnrollToken{},
 	}
 }
 
@@ -37,6 +47,12 @@ func (m *MemoryStore) AddUser(username, passwordHash string, active bool, change
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.users[username] = User{Username: username, PasswordHash: passwordHash, IsActive: active, PasswordChangedAt: changedAt}
+}
+
+func (m *MemoryStore) AddAdminUser(username, passwordHash, role string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.adminUsers[username] = AdminUser{ID: m.next(), Username: username, PasswordHash: passwordHash, Role: role, LastLoginAt: now}
 }
 
 func (m *MemoryStore) IsBanned(ip string, now time.Time) (bool, error) {
@@ -113,6 +129,188 @@ func (m *MemoryStore) UpdatePassword(username, passwordHash string, changedAt ti
 	return nil
 }
 
+func (m *MemoryStore) GetAdminUser(username string) (*AdminUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	admin, ok := m.adminUsers[username]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return &admin, nil
+}
+
+func (m *MemoryStore) UpdateAdminLogin(username string, lastLogin time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	admin, ok := m.adminUsers[username]
+	if !ok {
+		return errors.New("not found")
+	}
+	admin.LastLoginAt = lastLogin
+	m.adminUsers[username] = admin
+	return nil
+}
+
+func (m *MemoryStore) CreateClient(name string, now time.Time) (*Client, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	client := Client{ID: m.next(), Name: name, Status: "active", CreatedAt: now, UpdatedAt: now}
+	m.clients[client.ID] = client
+	return &client, nil
+}
+
+func (m *MemoryStore) ListClients() ([]Client, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	clients := make([]Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
+func (m *MemoryStore) GetClient(id int64) (*Client, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	client, ok := m.clients[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return &client, nil
+}
+
+func (m *MemoryStore) SetClientStatus(id int64, status string, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	client, ok := m.clients[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	client.Status = status
+	client.UpdatedAt = now
+	m.clients[id] = client
+	return nil
+}
+
+func (m *MemoryStore) InsertClientCert(cert ClientCert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cert.ID = m.next()
+	m.clientCerts[cert.ID] = cert
+	return nil
+}
+
+func (m *MemoryStore) ListClientCerts(clientID int64) ([]ClientCert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ClientCert
+	for _, cert := range m.clientCerts {
+		if clientID == 0 || cert.ClientID == clientID {
+			out = append(out, cert)
+		}
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) FindClientCertByFingerprint(fingerprint string) (*ClientCert, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, cert := range m.clientCerts {
+		if cert.FingerprintSHA256 == fingerprint {
+			return &cert, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+func (m *MemoryStore) RevokeClientCert(certID int64, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cert, ok := m.clientCerts[certID]
+	if !ok {
+		return errors.New("not found")
+	}
+	cert.Status = "revoked"
+	cert.RevokedAt = now
+	m.clientCerts[certID] = cert
+	return nil
+}
+
+func (m *MemoryStore) CreateEnrollToken(token EnrollToken) (*EnrollToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	token.ID = m.next()
+	m.tokens[token.ID] = token
+	return &token, nil
+}
+
+func (m *MemoryStore) ListEnrollTokens() ([]EnrollToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []EnrollToken
+	for _, token := range m.tokens {
+		out = append(out, token)
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) RevokeEnrollToken(id int64, now time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	token, ok := m.tokens[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	if token.UsedAt.After(time.Time{}) {
+		return nil
+	}
+	token.RevokedAt = now
+	m.tokens[id] = token
+	return nil
+}
+
+func (m *MemoryStore) ConsumeEnrollToken(tokenHash string, now time.Time) (*EnrollToken, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, token := range m.tokens {
+		if token.TokenHash != tokenHash {
+			continue
+		}
+		if token.UsedAt.After(time.Time{}) || token.RevokedAt.After(time.Time{}) || token.ExpiresAt.Before(now) {
+			return nil, errors.New("token invalid")
+		}
+		token.UsedAt = now
+		m.tokens[id] = token
+		return &token, nil
+	}
+	return nil, errors.New("token not found")
+}
+
+func (m *MemoryStore) InsertAuditEntry(entry AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry.ID = m.next()
+	m.audit = append(m.audit, entry)
+	return nil
+}
+
+func (m *MemoryStore) ListAudit(limit int) ([]AuditEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 || limit > len(m.audit) {
+		limit = len(m.audit)
+	}
+	start := len(m.audit) - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]AuditEntry, 0, limit)
+	for i := len(m.audit) - 1; i >= start; i-- {
+		out = append(out, m.audit[i])
+	}
+	return out, nil
+}
+
 func (m *MemoryStore) pruneBans(now time.Time) {
 	for ip, ban := range m.bans {
 		if !ban.until.After(now) {
@@ -134,4 +332,9 @@ func (m *MemoryStore) pruneAttempts(cutoff time.Time) {
 		}
 	}
 	m.attempts = m.attempts[:idx]
+}
+
+func (m *MemoryStore) next() int64 {
+	m.nextID++
+	return m.nextID
 }

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Whitelist</title>
+</head>
+<body>
+  <h1>Whitelist</h1>
+  <form method="POST" action="/admin/whitelist">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label>IP or CIDR <input name="entry" required></label>
+    <button type="submit">Add</button>
+  </form>
+  <ul>
+    {{range .Whitelist}}
+      <li>{{.}}</li>
+    {{else}}
+      <li>No entries.</li>
+    {{end}}
+  </ul>
+  <p><a href="/admin/dashboard">Back</a></p>
+</body>
+</html>

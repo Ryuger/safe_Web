@@ -18,9 +18,12 @@ type PostgresStore struct {
 }
 
 func NewStore() (Store, error) {
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := os.Getenv("DB_DSN")
 	if dsn == "" {
-		return nil, errors.New("DATABASE_URL is required")
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if dsn == "" {
+		return nil, errors.New("DB_DSN is required")
 	}
 
 	db, err := sql.Open("postgres", dsn)
@@ -118,4 +121,280 @@ func (p *PostgresStore) UpdatePassword(username, passwordHash string, changedAt 
 		passwordHash, changedAt, username,
 	)
 	return err
+}
+
+func (p *PostgresStore) GetAdminUser(username string) (*AdminUser, error) {
+	var admin AdminUser
+	var lastLogin sql.NullTime
+	err := p.db.QueryRow(
+		`SELECT id, username, password_hash, role, last_login_at FROM admin_users WHERE username = $1`,
+		username,
+	).Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &admin.Role, &lastLogin)
+	if err != nil {
+		return nil, err
+	}
+	if lastLogin.Valid {
+		admin.LastLoginAt = lastLogin.Time
+	}
+	return &admin, nil
+}
+
+func (p *PostgresStore) UpdateAdminLogin(username string, lastLogin time.Time) error {
+	_, err := p.db.Exec(
+		`UPDATE admin_users SET last_login_at = $1 WHERE username = $2`,
+		lastLogin, username,
+	)
+	return err
+}
+
+func (p *PostgresStore) CreateClient(name string, now time.Time) (*Client, error) {
+	var client Client
+	err := p.db.QueryRow(
+		`INSERT INTO clients (name, status, created_at, updated_at) VALUES ($1, 'active', $2, $2)
+		 RETURNING id, name, status, created_at, updated_at`,
+		name, now,
+	).Scan(&client.ID, &client.Name, &client.Status, &client.CreatedAt, &client.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &client, nil
+}
+
+func (p *PostgresStore) ListClients() ([]Client, error) {
+	rows, err := p.db.Query(`SELECT id, name, status, created_at, updated_at FROM clients ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var clients []Client
+	for rows.Next() {
+		var client Client
+		if err := rows.Scan(&client.ID, &client.Name, &client.Status, &client.CreatedAt, &client.UpdatedAt); err != nil {
+			return nil, err
+		}
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
+func (p *PostgresStore) GetClient(id int64) (*Client, error) {
+	var client Client
+	err := p.db.QueryRow(
+		`SELECT id, name, status, created_at, updated_at FROM clients WHERE id = $1`,
+		id,
+	).Scan(&client.ID, &client.Name, &client.Status, &client.CreatedAt, &client.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &client, nil
+}
+
+func (p *PostgresStore) SetClientStatus(id int64, status string, now time.Time) error {
+	_, err := p.db.Exec(
+		`UPDATE clients SET status = $1, updated_at = $2 WHERE id = $3`,
+		status, now, id,
+	)
+	return err
+}
+
+func (p *PostgresStore) InsertClientCert(cert ClientCert) error {
+	_, err := p.db.Exec(
+		`INSERT INTO client_certs (client_id, serial, fingerprint_sha256, not_before, not_after, status, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		cert.ClientID, cert.Serial, cert.FingerprintSHA256, cert.NotBefore, cert.NotAfter, cert.Status, cert.CreatedAt,
+	)
+	return err
+}
+
+func (p *PostgresStore) ListClientCerts(clientID int64) ([]ClientCert, error) {
+	query := `SELECT id, client_id, serial, fingerprint_sha256, not_before, not_after, status, created_at, revoked_at
+		FROM client_certs`
+	args := []any{}
+	if clientID != 0 {
+		query += " WHERE client_id = $1"
+		args = append(args, clientID)
+	}
+	query += " ORDER BY id DESC"
+
+	rows, err := p.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var certs []ClientCert
+	for rows.Next() {
+		var cert ClientCert
+		var revoked sql.NullTime
+		if err := rows.Scan(&cert.ID, &cert.ClientID, &cert.Serial, &cert.FingerprintSHA256, &cert.NotBefore, &cert.NotAfter, &cert.Status, &cert.CreatedAt, &revoked); err != nil {
+			return nil, err
+		}
+		if revoked.Valid {
+			cert.RevokedAt = revoked.Time
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}
+
+func (p *PostgresStore) FindClientCertByFingerprint(fingerprint string) (*ClientCert, error) {
+	var cert ClientCert
+	var revoked sql.NullTime
+	err := p.db.QueryRow(
+		`SELECT id, client_id, serial, fingerprint_sha256, not_before, not_after, status, created_at, revoked_at
+		 FROM client_certs WHERE fingerprint_sha256 = $1`,
+		fingerprint,
+	).Scan(&cert.ID, &cert.ClientID, &cert.Serial, &cert.FingerprintSHA256, &cert.NotBefore, &cert.NotAfter, &cert.Status, &cert.CreatedAt, &revoked)
+	if err != nil {
+		return nil, err
+	}
+	if revoked.Valid {
+		cert.RevokedAt = revoked.Time
+	}
+	return &cert, nil
+}
+
+func (p *PostgresStore) RevokeClientCert(certID int64, now time.Time) error {
+	_, err := p.db.Exec(
+		`UPDATE client_certs SET status = 'revoked', revoked_at = $1 WHERE id = $2`,
+		now, certID,
+	)
+	return err
+}
+
+func (p *PostgresStore) CreateEnrollToken(token EnrollToken) (*EnrollToken, error) {
+	var out EnrollToken
+	var used sql.NullTime
+	var revoked sql.NullTime
+	err := p.db.QueryRow(
+		`INSERT INTO enroll_tokens (token_hash, client_id, expires_at, created_at)
+		 VALUES ($1,$2,$3,$4)
+		 RETURNING id, token_hash, client_id, expires_at, used_at, revoked_at, created_at`,
+		token.TokenHash, token.ClientID, token.ExpiresAt, token.CreatedAt,
+	).Scan(&out.ID, &out.TokenHash, &out.ClientID, &out.ExpiresAt, &used, &revoked, &out.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if used.Valid {
+		out.UsedAt = used.Time
+	}
+	if revoked.Valid {
+		out.RevokedAt = revoked.Time
+	}
+	return &out, nil
+}
+
+func (p *PostgresStore) ListEnrollTokens() ([]EnrollToken, error) {
+	rows, err := p.db.Query(`
+		SELECT id, token_hash, client_id, expires_at, used_at, revoked_at, created_at
+		FROM enroll_tokens ORDER BY id DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tokens []EnrollToken
+	for rows.Next() {
+		var token EnrollToken
+		var used sql.NullTime
+		var revoked sql.NullTime
+		if err := rows.Scan(&token.ID, &token.TokenHash, &token.ClientID, &token.ExpiresAt, &used, &revoked, &token.CreatedAt); err != nil {
+			return nil, err
+		}
+		if used.Valid {
+			token.UsedAt = used.Time
+		}
+		if revoked.Valid {
+			token.RevokedAt = revoked.Time
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, nil
+}
+
+func (p *PostgresStore) RevokeEnrollToken(id int64, now time.Time) error {
+	_, err := p.db.Exec(
+		`UPDATE enroll_tokens SET revoked_at = $1 WHERE id = $2 AND used_at IS NULL`,
+		now, id,
+	)
+	return err
+}
+
+func (p *PostgresStore) ConsumeEnrollToken(tokenHash string, now time.Time) (*EnrollToken, error) {
+	var token EnrollToken
+	var used sql.NullTime
+	var revoked sql.NullTime
+	var expires time.Time
+	var clientID int64
+
+	tx, err := p.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	err = tx.QueryRow(
+		`SELECT id, token_hash, client_id, expires_at, used_at, revoked_at, created_at
+		 FROM enroll_tokens WHERE token_hash = $1 FOR UPDATE`,
+		tokenHash,
+	).Scan(&token.ID, &token.TokenHash, &clientID, &expires, &used, &revoked, &token.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	token.ClientID = clientID
+	token.ExpiresAt = expires
+	if used.Valid {
+		token.UsedAt = used.Time
+	}
+	if revoked.Valid {
+		token.RevokedAt = revoked.Time
+	}
+
+	if used.Valid || revoked.Valid || token.ExpiresAt.Before(now) {
+		return nil, errors.New("token invalid")
+	}
+
+	_, err = tx.Exec(`UPDATE enroll_tokens SET used_at = $1 WHERE id = $2`, now, token.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &token, nil
+}
+
+func (p *PostgresStore) InsertAuditEntry(entry AuditEntry) error {
+	_, err := p.db.Exec(
+		`INSERT INTO admin_audit_log (actor, action, target_type, target_id, metadata_json, created_at)
+		 VALUES ($1,$2,$3,$4,$5::jsonb,$6)`,
+		entry.Actor, entry.Action, entry.TargetType, entry.TargetID, entry.Metadata, entry.CreatedAt,
+	)
+	return err
+}
+
+func (p *PostgresStore) ListAudit(limit int) ([]AuditEntry, error) {
+	rows, err := p.db.Query(
+		`SELECT id, actor, action, target_type, target_id, metadata_json, created_at
+		 FROM admin_audit_log ORDER BY id DESC LIMIT $1`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []AuditEntry
+	for rows.Next() {
+		var entry AuditEntry
+		if err := rows.Scan(&entry.ID, &entry.Actor, &entry.Action, &entry.TargetType, &entry.TargetID, &entry.Metadata, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
