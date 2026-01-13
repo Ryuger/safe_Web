@@ -29,7 +29,6 @@ import (
 	"safe_web/internal/session"
 	"safe_web/internal/store"
 	"safe_web/internal/web"
-	"safe_web/internal/whitelist"
 )
 
 const (
@@ -41,7 +40,6 @@ const (
 	defaultPublicKeyPath  = "config/key.pem"
 	defaultAdminCertPath  = "config/admin_cert.pem"
 	defaultAdminKeyPath   = "config/admin_key.pem"
-	defaultWLPath         = "config/ip_whitelist.txt"
 
 	loginWindowMinutes = 10
 	banTTLMinutes      = 60
@@ -54,8 +52,6 @@ const (
 
 type App struct {
 	Store         store.Store
-	Whitelist     *whitelist.List
-	WhitelistPath string
 	Limiter       *ratelimit.Limiter
 	AdminLimiter  *ratelimit.Limiter
 	Sessions      *session.Store
@@ -100,10 +96,11 @@ type templateData struct {
 	Client            *store.Client
 	Certs             []store.ClientCert
 	Tokens            []store.EnrollToken
-	Whitelist         []string
+	WhitelistEntries  []store.WhitelistEntry
 	Audit             []store.AuditEntry
 	Settings          *Settings
 	TokenValue        string
+	Users             []store.User
 }
 
 func main() {
@@ -115,7 +112,6 @@ func main() {
 	adminCertPath := getenv("ADMIN_CERT_PATH", defaultAdminCertPath)
 	adminKeyPath := getenv("ADMIN_KEY_PATH", defaultAdminKeyPath)
 	adminTLSEnabled := getenvBool("ADMIN_TLS_ENABLED", false)
-	whitelistPath := getenv("WHITELIST_PATH", defaultWLPath)
 	mtlsEnabled := getenvBool("MTLS_ENABLED", false)
 	enrollEnabled := getenvBool("ENROLL_ENABLED", false)
 	requireLogin := getenvBool("REQUIRE_LOGIN", true)
@@ -124,10 +120,8 @@ func main() {
 	caKeyPath := os.Getenv("CA_KEY_PATH")
 	tokenTTL := getenvDuration("ENROLL_TOKEN_TTL", defaultTokenTTL)
 
-	wl, err := whitelist.Load(whitelistPath)
-	if err != nil {
-		log.Fatalf("load whitelist: %v", err)
-	}
+	validateListenAddr(publicAddr)
+	validateLoopbackAddr(adminAddr)
 
 	st, err := store.NewStore()
 	if err != nil {
@@ -152,8 +146,6 @@ func main() {
 
 	app := &App{
 		Store:         st,
-		Whitelist:     wl,
-		WhitelistPath: whitelistPath,
 		Limiter:       ratelimit.New(5, time.Minute),
 		AdminLimiter:  ratelimit.New(5, time.Minute),
 		Sessions:      session.NewStore(publicSessionTTL),
@@ -167,7 +159,6 @@ func main() {
 		TokenTTL:      tokenTTL,
 	}
 
-	bootstrapMemoryUser(app)
 	bootstrapAdminUser(app)
 
 	publicTLS, err := buildPublicTLSConfig(settings, clientCAPath)
@@ -193,6 +184,7 @@ func main() {
 	}
 
 	adminMux := http.NewServeMux()
+	adminMux.Handle("/", app.adminIPGuard(app.securityHeaders(http.HandlerFunc(app.adminRootHandler))))
 	adminMux.Handle("/admin/login", app.adminIPGuard(app.securityHeaders(http.HandlerFunc(app.adminLoginHandler))))
 	adminMux.Handle("/admin/logout", app.adminIPGuard(app.securityHeaders(http.HandlerFunc(app.adminLogoutHandler))))
 	adminMux.Handle("/admin/dashboard", app.adminAuth(app.securityHeaders(http.HandlerFunc(app.adminDashboardHandler))))
@@ -333,7 +325,8 @@ func (a *App) ipGuard(next http.Handler) http.Handler {
 			minimalResponse(w)
 			return
 		}
-		if !a.Whitelist.Allowed(ip) {
+		allowed, err := a.isWhitelisted(ip.String())
+		if err != nil || !allowed {
 			minimalResponse(w)
 			return
 		}
@@ -780,6 +773,14 @@ func (a *App) adminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
 }
 
+func (a *App) adminRootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
 func (a *App) adminLogoutHandler(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(a.AdminCookie)
 	if err == nil {
@@ -864,16 +865,39 @@ func (a *App) adminClientDetailHandler(w http.ResponseWriter, r *http.Request) {
 			_ = a.Store.InsertAuditEntry(store.AuditEntry{Actor: a.adminActor(r), Action: "token_create", TargetType: "client", TargetID: fmt.Sprintf("%d", id), Metadata: "{}", CreatedAt: time.Now()})
 			csrf := a.rotateAdminCSRF(w)
 			certs, _ := a.Store.ListClientCerts(id)
-			web.Render(w, "admin_client_detail.html", templateData{Client: client, Certs: certs, CSRFToken: csrf, TokenValue: tokenValue})
+			users, _ := a.Store.ListUsersByClient(id)
+			web.Render(w, "admin_client_detail.html", templateData{Client: client, Certs: certs, Users: users, CSRFToken: csrf, TokenValue: tokenValue})
 			return
+		case "create_user":
+			username := strings.TrimSpace(r.FormValue("username"))
+			password := r.FormValue("password")
+			ip := strings.TrimSpace(r.FormValue("ip"))
+			if username == "" || password == "" || !validateWhitelistValue(ip) {
+				http.Redirect(w, r, fmt.Sprintf("/admin/clients/%d", id), http.StatusSeeOther)
+				return
+			}
+			hash, err := auth.HashPassword(password)
+			if err == nil {
+				if user, err := a.Store.CreateUser(id, username, hash, time.Now()); err == nil {
+					_ = a.Store.AddWhitelist(store.WhitelistEntry{
+						Value:     ip,
+						OwnerType: "user",
+						OwnerID:   user.ID,
+						Label:     username,
+						CreatedAt: time.Now(),
+					})
+					_ = a.Store.InsertAuditEntry(store.AuditEntry{Actor: a.adminActor(r), Action: "user_create", TargetType: "user", TargetID: fmt.Sprintf("%d", user.ID), Metadata: "{}", CreatedAt: time.Now()})
+				}
+			}
 		}
 		http.Redirect(w, r, fmt.Sprintf("/admin/clients/%d", id), http.StatusSeeOther)
 		return
 	}
 
 	certs, _ := a.Store.ListClientCerts(id)
+	users, _ := a.Store.ListUsersByClient(id)
 	csrf := a.rotateAdminCSRF(w)
-	web.Render(w, "admin_client_detail.html", templateData{Client: client, Certs: certs, CSRFToken: csrf})
+	web.Render(w, "admin_client_detail.html", templateData{Client: client, Certs: certs, Users: users, CSRFToken: csrf})
 }
 
 func (a *App) adminTokensHandler(w http.ResponseWriter, r *http.Request) {
@@ -909,21 +933,30 @@ func (a *App) adminWhitelistHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		entry := strings.TrimSpace(r.FormValue("entry"))
-		if entry != "" && validateWhitelistEntry(entry) {
-			if err := appendWhitelistEntry(a.WhitelistPath, entry); err == nil {
-				if wl, err := whitelist.Load(a.WhitelistPath); err == nil {
-					a.Whitelist = wl
-				}
-				_ = a.Store.InsertAuditEntry(store.AuditEntry{Actor: a.adminActor(r), Action: "whitelist_add", TargetType: "whitelist", TargetID: entry, Metadata: "{}", CreatedAt: time.Now()})
+		label := strings.TrimSpace(r.FormValue("label"))
+		if entry != "" && validateWhitelistValue(entry) {
+			_ = a.Store.AddWhitelist(store.WhitelistEntry{
+				Value:     entry,
+				OwnerType: "manual",
+				OwnerID:   0,
+				Label:     label,
+				CreatedAt: time.Now(),
+			})
+			_ = a.Store.InsertAuditEntry(store.AuditEntry{Actor: a.adminActor(r), Action: "whitelist_add", TargetType: "whitelist", TargetID: entry, Metadata: "{}", CreatedAt: time.Now()})
+		}
+		if deleteID := r.FormValue("delete_id"); deleteID != "" {
+			if id, err := strconv.ParseInt(deleteID, 10, 64); err == nil {
+				_ = a.Store.DeleteWhitelist(id)
+				_ = a.Store.InsertAuditEntry(store.AuditEntry{Actor: a.adminActor(r), Action: "whitelist_delete", TargetType: "whitelist", TargetID: deleteID, Metadata: "{}", CreatedAt: time.Now()})
 			}
 		}
 		http.Redirect(w, r, "/admin/whitelist", http.StatusSeeOther)
 		return
 	}
 
-	entries, _ := readWhitelistEntries(a.WhitelistPath)
+	entries, _ := a.Store.ListWhitelist()
 	csrf := a.rotateAdminCSRF(w)
-	web.Render(w, "admin_whitelist.html", templateData{Whitelist: entries, CSRFToken: csrf})
+	web.Render(w, "admin_whitelist.html", templateData{WhitelistEntries: entries, CSRFToken: csrf})
 }
 
 func (a *App) adminSettingsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1177,37 +1210,20 @@ func parseID(value string) (int64, error) {
 	return strconv.ParseInt(value, 10, 64)
 }
 
-func readWhitelistEntries(path string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+func (a *App) isWhitelisted(ip string) (bool, error) {
+	entries, err := a.Store.ListWhitelist()
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	var entries []string
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
+	for _, entry := range entries {
+		if matchesWhitelist(ip, entry.Value) {
+			return true, nil
 		}
-		entries = append(entries, trimmed)
 	}
-	return entries, nil
+	return false, nil
 }
 
-func appendWhitelistEntry(path, entry string) error {
-	if entry == "" {
-		return nil
-	}
-	file, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.WriteString(entry + "\n")
-	return err
-}
-
-func validateWhitelistEntry(entry string) bool {
+func validateWhitelistValue(entry string) bool {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return false
@@ -1217,6 +1233,21 @@ func validateWhitelistEntry(entry string) bool {
 		return err == nil
 	}
 	return net.ParseIP(entry) != nil
+}
+
+func matchesWhitelist(ip, entry string) bool {
+	if strings.Contains(entry, "/") {
+		_, cidr, err := net.ParseCIDR(entry)
+		if err != nil {
+			return false
+		}
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			return false
+		}
+		return cidr.Contains(parsed)
+	}
+	return ip == entry
 }
 
 func urlValues(body []byte) (map[string]string, error) {
@@ -1360,4 +1391,38 @@ func getenvDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func validateListenAddr(addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		log.Fatalf("invalid LISTEN_PUBLIC_ADDR: %v", err)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		log.Fatalf("interfaces: %v", err)
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.String() == host {
+			return
+		}
+	}
+	log.Fatalf("LISTEN_PUBLIC_ADDR host %s not found on any interface", host)
+}
+
+func validateLoopbackAddr(addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		log.Fatalf("invalid LISTEN_ADMIN_ADDR: %v", err)
+	}
+	if host == "" {
+		return
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		log.Fatalf("LISTEN_ADMIN_ADDR must be loopback (127.0.0.1 or ::1)")
+	}
 }

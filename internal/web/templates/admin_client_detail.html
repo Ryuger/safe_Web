@@ -16,6 +16,23 @@
     {{end}}
   </form>
 
+  <h2>Users</h2>
+  <form method="POST" action="/admin/clients/{{.Client.ID}}">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="action" value="create_user">
+    <label>Username <input name="username" required></label>
+    <label>Password <input name="password" type="password" required></label>
+    <label>User IP/CIDR <input name="ip" required></label>
+    <button type="submit">Create user</button>
+  </form>
+  <ul>
+    {{range .Users}}
+      <li>{{.Username}}</li>
+    {{else}}
+      <li>No users.</li>
+    {{end}}
+  </ul>
+
   <h2>Certificates</h2>
   <ul>
     {{range .Certs}}

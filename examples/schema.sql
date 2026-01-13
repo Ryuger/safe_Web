@@ -1,5 +1,6 @@
 CREATE TABLE users (
     id                  BIGSERIAL PRIMARY KEY,
+    client_id           BIGINT REFERENCES clients(id),
     username            TEXT UNIQUE NOT NULL,
     password_hash       TEXT NOT NULL,
     is_active           BOOLEAN NOT NULL DEFAULT true,
@@ -46,6 +47,15 @@ CREATE TABLE enroll_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE whitelist (
+    id         BIGSERIAL PRIMARY KEY,
+    value      TEXT NOT NULL,
+    owner_type TEXT NOT NULL,
+    owner_id   BIGINT NOT NULL DEFAULT 0,
+    label      TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE login_attempts (
     id         BIGSERIAL PRIMARY KEY,
     ip         INET NOT NULL,
@@ -81,6 +91,7 @@ CREATE TABLE admin_audit_log (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE INDEX idx_users_client ON users (client_id);
 CREATE INDEX idx_login_attempts_ip_time ON login_attempts (ip, created_at DESC);
 CREATE INDEX idx_login_attempts_user_time ON login_attempts (username, created_at DESC);
 CREATE INDEX idx_ip_bans_until ON ip_bans (banned_until);
@@ -88,3 +99,4 @@ CREATE INDEX idx_audit_log_time ON audit_log (created_at DESC);
 CREATE INDEX idx_admin_audit_log_time ON admin_audit_log (created_at DESC);
 CREATE INDEX idx_client_certs_fingerprint ON client_certs (fingerprint_sha256);
 CREATE INDEX idx_enroll_tokens_hash ON enroll_tokens (token_hash);
+CREATE INDEX idx_whitelist_value ON whitelist (value);

@@ -3,6 +3,8 @@ package store
 import "time"
 
 type User struct {
+	ID                int64
+	ClientID          int64
 	Username          string
 	PasswordHash      string
 	IsActive          bool
@@ -47,6 +49,15 @@ type EnrollToken struct {
 	CreatedAt time.Time
 }
 
+type WhitelistEntry struct {
+	ID        int64
+	Value     string
+	OwnerType string
+	OwnerID   int64
+	Label     string
+	CreatedAt time.Time
+}
+
 type AuditEntry struct {
 	ID         int64
 	Actor      string
@@ -59,7 +70,14 @@ type AuditEntry struct {
 
 type Store interface {
 	IsBanned(ip string, now time.Time) (bool, error)
+	IsWhitelisted(ip string) (bool, error)
+	ListWhitelist() ([]WhitelistEntry, error)
+	AddWhitelist(entry WhitelistEntry) error
+	DeleteWhitelist(id int64) error
+
 	GetUser(username string) (*User, error)
+	CreateUser(clientID int64, username, passwordHash string, now time.Time) (*User, error)
+	ListUsersByClient(clientID int64) ([]User, error)
 	InsertAttempt(ip, username string, success bool, now time.Time) error
 	CheckConsecutiveFailures(ip string, window time.Duration, limit int, now time.Time) (bool, error)
 	UpsertBan(ip string, ttl time.Duration, reason string, now time.Time) error

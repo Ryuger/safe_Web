@@ -16,6 +16,7 @@ type MemoryStore struct {
 	clients     map[int64]Client
 	clientCerts map[int64]ClientCert
 	tokens      map[int64]EnrollToken
+	whitelist   map[int64]WhitelistEntry
 	audit       []AuditEntry
 	nextID      int64
 }
@@ -40,13 +41,14 @@ func NewMemoryStore() *MemoryStore {
 		clients:     map[int64]Client{},
 		clientCerts: map[int64]ClientCert{},
 		tokens:      map[int64]EnrollToken{},
+		whitelist:   map[int64]WhitelistEntry{},
 	}
 }
 
 func (m *MemoryStore) AddUser(username, passwordHash string, active bool, changedAt time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.users[username] = User{Username: username, PasswordHash: passwordHash, IsActive: active, PasswordChangedAt: changedAt}
+	m.users[username] = User{ID: m.next(), Username: username, PasswordHash: passwordHash, IsActive: active, PasswordChangedAt: changedAt}
 }
 
 func (m *MemoryStore) AddAdminUser(username, passwordHash, role string, now time.Time) {
@@ -66,6 +68,42 @@ func (m *MemoryStore) IsBanned(ip string, now time.Time) (bool, error) {
 	return ban.until.After(now), nil
 }
 
+func (m *MemoryStore) IsWhitelisted(ip string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, entry := range m.whitelist {
+		if entry.Value == ip {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MemoryStore) ListWhitelist() ([]WhitelistEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []WhitelistEntry
+	for _, entry := range m.whitelist {
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+func (m *MemoryStore) AddWhitelist(entry WhitelistEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry.ID = m.next()
+	m.whitelist[entry.ID] = entry
+	return nil
+}
+
+func (m *MemoryStore) DeleteWhitelist(id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.whitelist, id)
+	return nil
+}
+
 func (m *MemoryStore) GetUser(username string) (*User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -74,6 +112,29 @@ func (m *MemoryStore) GetUser(username string) (*User, error) {
 		return nil, errors.New("not found")
 	}
 	return &user, nil
+}
+
+func (m *MemoryStore) CreateUser(clientID int64, username, passwordHash string, now time.Time) (*User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.users[username]; exists {
+		return nil, errors.New("already exists")
+	}
+	user := User{ID: m.next(), ClientID: clientID, Username: username, PasswordHash: passwordHash, IsActive: true, PasswordChangedAt: now}
+	m.users[username] = user
+	return &user, nil
+}
+
+func (m *MemoryStore) ListUsersByClient(clientID int64) ([]User, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []User
+	for _, user := range m.users {
+		if user.ClientID == clientID {
+			out = append(out, user)
+		}
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) InsertAttempt(ip, username string, success bool, now time.Time) error {

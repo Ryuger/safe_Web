@@ -50,16 +50,90 @@ func (p *PostgresStore) IsBanned(ip string, now time.Time) (bool, error) {
 	return err == nil, err
 }
 
+func (p *PostgresStore) IsWhitelisted(ip string) (bool, error) {
+	var id int64
+	err := p.db.QueryRow(`SELECT id FROM whitelist WHERE value = $1`, ip).Scan(&id)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (p *PostgresStore) ListWhitelist() ([]WhitelistEntry, error) {
+	rows, err := p.db.Query(`SELECT id, value, owner_type, owner_id, label, created_at FROM whitelist ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []WhitelistEntry
+	for rows.Next() {
+		var entry WhitelistEntry
+		if err := rows.Scan(&entry.ID, &entry.Value, &entry.OwnerType, &entry.OwnerID, &entry.Label, &entry.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func (p *PostgresStore) AddWhitelist(entry WhitelistEntry) error {
+	_, err := p.db.Exec(
+		`INSERT INTO whitelist (value, owner_type, owner_id, label, created_at) VALUES ($1,$2,$3,$4,$5)`,
+		entry.Value, entry.OwnerType, entry.OwnerID, entry.Label, entry.CreatedAt,
+	)
+	return err
+}
+
+func (p *PostgresStore) DeleteWhitelist(id int64) error {
+	_, err := p.db.Exec(`DELETE FROM whitelist WHERE id = $1`, id)
+	return err
+}
+
 func (p *PostgresStore) GetUser(username string) (*User, error) {
 	var user User
 	err := p.db.QueryRow(
-		`SELECT username, password_hash, is_active, password_changed_at FROM users WHERE username = $1`,
+		`SELECT id, client_id, username, password_hash, is_active, password_changed_at FROM users WHERE username = $1`,
 		username,
-	).Scan(&user.Username, &user.PasswordHash, &user.IsActive, &user.PasswordChangedAt)
+	).Scan(&user.ID, &user.ClientID, &user.Username, &user.PasswordHash, &user.IsActive, &user.PasswordChangedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &user, nil
+}
+
+func (p *PostgresStore) CreateUser(clientID int64, username, passwordHash string, now time.Time) (*User, error) {
+	var user User
+	err := p.db.QueryRow(
+		`INSERT INTO users (client_id, username, password_hash, is_active, password_changed_at, created_at)
+		 VALUES ($1,$2,$3,true,$4,$4)
+		 RETURNING id, client_id, username, password_hash, is_active, password_changed_at`,
+		clientID, username, passwordHash, now,
+	).Scan(&user.ID, &user.ClientID, &user.Username, &user.PasswordHash, &user.IsActive, &user.PasswordChangedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func (p *PostgresStore) ListUsersByClient(clientID int64) ([]User, error) {
+	rows, err := p.db.Query(
+		`SELECT id, client_id, username, password_hash, is_active, password_changed_at FROM users WHERE client_id = $1`,
+		clientID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.ClientID, &user.Username, &user.PasswordHash, &user.IsActive, &user.PasswordChangedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, nil
 }
 
 func (p *PostgresStore) InsertAttempt(ip, username string, success bool, now time.Time) error {
