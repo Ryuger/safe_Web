@@ -33,32 +33,6 @@
     {{end}}
   </ul>
 
-  <h2>Certificates</h2>
-  <ul>
-    {{range .Certs}}
-      <li>{{.Serial}} - {{.Status}} (expires {{.NotAfter}})
-        {{if eq .Status "active"}}
-          <form method="POST" action="/admin/clients/{{$.Client.ID}}" style="display:inline">
-            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-            <input type="hidden" name="cert_id" value="{{.ID}}">
-            <button name="action" value="revoke_cert">Revoke</button>
-          </form>
-        {{end}}
-      </li>
-    {{else}}
-      <li>No certificates.</li>
-    {{end}}
-  </ul>
-
-  <h2>Issue Enrollment Token</h2>
-  <form method="POST" action="/admin/clients/{{.Client.ID}}">
-    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <button name="action" value="issue_token">Generate token</button>
-  </form>
-  {{if .TokenValue}}
-    <p><strong>Token (show once):</strong> {{.TokenValue}}</p>
-  {{end}}
-
   <p><a href="/admin/clients">Back</a></p>
 </body>
 </html>

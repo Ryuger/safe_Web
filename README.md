@@ -2,7 +2,7 @@
 
 Это один Go-бинарник с двумя веб-интерфейсами:
 - **Публичный** (для пользователей/клиентов): HTTPS, логин в систему.
-- **Админка** (только на localhost): управление клиентами, пользователями, whitelist, токенами enrollment, аудитом.
+- **Админка** (только на localhost): управление клиентами, пользователями, whitelist и аудитом.
 
 ---
 
@@ -37,10 +37,6 @@ $env:PUBLIC_KEY_PATH = "config/key.pem"
 # Создание первого админа при старте
 $env:BOOTSTRAP_ADMIN_USER = "localadmin"
 $env:BOOTSTRAP_ADMIN_PASSWORD = "ChangeMeNow!"
-
-# Включать mTLS можно позже, это НЕ обязательно
-$env:MTLS_ENABLED = "false"
-$env:ENROLL_ENABLED = "false"
 
 # Запуск
 go run ./cmd/server
@@ -99,20 +95,14 @@ openssl req -x509 -newkey rsa:4096 -keyout config/key.pem -out config/cert.pem -
 - Включить/выключить клиента.
 - Создать пользователя для клиента (логин/пароль).
 - Добавить whitelist-адрес для пользователя при создании.
-- Просмотр/отзыв сертификатов.
-- Выпуск enrollment token (показывается один раз).
 
 ### `/admin/whitelist`
 - Ручное добавление IP/CIDR (manual).
 - Просмотр, чей адрес (owner_type / owner_id / label).
 - Удаление записей.
 
-### `/admin/tokens`
-- Список токенов (в masked виде).
-- Отзыв неиспользованных токенов.
-
 ### `/admin/settings`
-- Переключатели поведения (например enroll/login режимы).
+- Переключатели поведения (режим login).
 
 ### `/admin/audit`
 - Журнал действий админа.
@@ -136,32 +126,17 @@ openssl req -x509 -newkey rsa:4096 -keyout config/key.pem -out config/cert.pem -
 
 ---
 
-## 8) mTLS / сертификаты — это доп. опция
-
-Да, это **необязательный модуль**.
-
-Если не планируете сейчас:
-- `MTLS_ENABLED=false`
-- `ENROLL_ENABLED=false`
-
-Обычная логин-пароль схема будет работать без enrollment/CSR.
-
----
-
-## 9) Полезные переменные окружения
+## 8) Полезные переменные окружения
 
 - `LISTEN_PUBLIC_ADDR` — публичный адрес сервера (например `:8443`)
 - `LISTEN_ADMIN_ADDR` — адрес админки (обязательно loopback, например `127.0.0.1:9443`)
 - `PUBLIC_CERT_PATH`, `PUBLIC_KEY_PATH` — TLS для публичного сервера
 - `BOOTSTRAP_ADMIN_USER`, `BOOTSTRAP_ADMIN_PASSWORD` — первичный админ
 - `DB_DSN` — Postgres DSN (если используете postgres build)
-- `MTLS_ENABLED`, `ENROLL_ENABLED` — опции сертификатного контура
-- `CLIENT_CA_PATH`, `CA_CERT_PATH`, `CA_KEY_PATH` — пути для mTLS/enroll
-- `ENROLL_TOKEN_TTL` — TTL токенов (по умолчанию 15m)
 
 ---
 
-## 10) Мини-чек после запуска
+## 9) Мини-чек после запуска
 
 1. Открывается админка на `127.0.0.1:9443`.
 2. С внешней машины админка **не открывается**.
