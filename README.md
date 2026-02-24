@@ -1,78 +1,170 @@
-# safe_Web
+# safe_Web — инструкция «для чайников»
 
-Single-binary HTTPS service for air-gapped or intranet deployments. No external proxy required.
+Это один Go-бинарник с двумя веб-интерфейсами:
+- **Публичный** (для пользователей/клиентов): HTTPS, логин в систему.
+- **Админка** (только на localhost): управление клиентами, пользователями, whitelist, токенами enrollment, аудитом.
 
-## Architecture
+---
 
-- **Public server**: HTTPS, user login, optional mTLS, enrollment endpoint.
-- **Admin server**: local-only UI (`127.0.0.1`), manages clients/users/tokens/whitelist/settings/audit.
+## 1) Что важно знать сразу
 
-## Quick start (Windows PowerShell)
+1. **Админка доступна только локально** (на сервере), по адресу `127.0.0.1`.
+2. **Публичная часть** открывается на выбранном адресе/порту (по умолчанию `:8443`).
+3. **Без создания админа через env** войти в админку не получится.
+4. **Логин/пароль админа задаются при запуске через переменные окружения**:
+   - `BOOTSTRAP_ADMIN_USER`
+   - `BOOTSTRAP_ADMIN_PASSWORD`
 
-> The public server listens on `:8443` by default. To bind `:443`, run PowerShell as Administrator and set `LISTEN_PUBLIC_ADDR=:443`.
+Именно это и есть «изначальные» учётные данные админа для первого старта.
+
+---
+
+## 2) Быстрый запуск (Windows PowerShell)
+
+> Ниже минимальный рабочий вариант для локального старта.
 
 ```powershell
+# Публичный сервер (для клиентов)
 $env:LISTEN_PUBLIC_ADDR = ":8443"
+
+# Админка (только локально!)
 $env:LISTEN_ADMIN_ADDR = "127.0.0.1:9443"
-$env:LISTEN_LOCAL_ADDR = "127.0.0.1:8080"
+
+# Сертификат публичного HTTPS
 $env:PUBLIC_CERT_PATH = "config/cert.pem"
 $env:PUBLIC_KEY_PATH = "config/key.pem"
+
+# Создание первого админа при старте
 $env:BOOTSTRAP_ADMIN_USER = "localadmin"
 $env:BOOTSTRAP_ADMIN_PASSWORD = "ChangeMeNow!"
 
-# For Postgres builds
-$env:DB_DSN = "postgres://user:pass@127.0.0.1:5432/safe_web?sslmode=disable"
-
-# Optional mTLS / enrollment
+# Включать mTLS можно позже, это НЕ обязательно
 $env:MTLS_ENABLED = "false"
-$env:ENROLL_ENABLED = "true"
-$env:CLIENT_CA_PATH = "config/client_ca.pem"
-$env:CA_CERT_PATH = "config/ca_cert.pem"
-$env:CA_KEY_PATH = "config/ca_key.pem"
-$env:ENROLL_TOKEN_TTL = "15m"
+$env:ENROLL_ENABLED = "false"
 
-# Admin TLS (optional)
-$env:ADMIN_TLS_ENABLED = "false"
-$env:ADMIN_CERT_PATH = "config/admin_cert.pem"
-$env:ADMIN_KEY_PATH = "config/admin_key.pem"
-
-# Build for Postgres
-# go build -tags postgres -o safe_web.exe ./cmd/server
-# Run
-# ./safe_web.exe
-
+# Запуск
 go run ./cmd/server
 ```
 
-## Generate a self-signed certificate (PowerShell)
+---
+
+## 3) Где взять cert.pem/key.pem
+
+Для теста можно сделать самоподписанный сертификат:
 
 ```powershell
 openssl req -x509 -newkey rsa:4096 -keyout config/key.pem -out config/cert.pem -days 365 -nodes -subj "/CN=localhost"
 ```
 
-## Admin UI (local only)
+---
 
-- Admin UI listens on `LISTEN_ADMIN_ADDR` and only accepts loopback clients.
-- Visit `https://127.0.0.1:9443/admin/login` (or `http://` if `ADMIN_TLS_ENABLED=false`).
-- Client, user, and whitelist management is **only** available through the admin UI.
+## 4) Как войти в админку
 
-## Enrollment flow (mTLS clients)
+После запуска откройте на **самом сервере**:
+- `http://127.0.0.1:9443/` (если `ADMIN_TLS_ENABLED=false`)
+- или `https://127.0.0.1:9443/` (если `ADMIN_TLS_ENABLED=true`)
 
-1. Admin creates a client.
-2. Admin creates a user under the client (username/password + IP/CIDR whitelist entry).
-3. Admin issues an enrollment token from `/admin/clients/{id}` (shown once).
-4. Client generates a CSR and POSTs to `/enroll` with `client_id`, `csr_pem`, and `token`.
-5. Server verifies token + CSR and returns a signed client certificate.
+С `/` будет редирект на `/admin/login`.
 
-## Files
+Логин/пароль:
+- логин = значение `BOOTSTRAP_ADMIN_USER`
+- пароль = значение `BOOTSTRAP_ADMIN_PASSWORD`
 
-- `cmd/server`: public + admin HTTPS servers.
-- `examples/schema.sql`: Postgres schema + indexes.
+---
 
-## Minimal test plan
+## 5) Откуда берутся «первые» логины/пароли
 
-1. **Whitelist enforcement**: ensure your IP is not on whitelist, confirm `GET /` returns empty 404.
-2. **Add whitelist via admin**: login to admin UI and add an IP entry; verify access is allowed.
-3. **Login ban**: perform 3 failed logins within 10 minutes from a whitelisted IP and verify subsequent attempts are blocked for 60 minutes.
-4. **Admin loopback**: try hitting admin UI from a non-loopback interface and confirm a minimal 404.
-5. **Enrollment tokens**: generate a token, use it once, verify second use fails; verify expired tokens fail.
+### Админ
+Берётся из env при запуске:
+- `BOOTSTRAP_ADMIN_USER`
+- `BOOTSTRAP_ADMIN_PASSWORD`
+
+### Обычные пользователи
+Создаются **только через админку**:
+1. Создаёте клиента.
+2. Открываете клиента.
+3. Создаёте пользователя (username/password).
+4. Сразу указываете его IP/CIDR для whitelist.
+
+Без админки создание пользователей/клиентов не предусмотрено.
+
+---
+
+## 6) Основной функционал админки
+
+### `/admin/clients`
+- Создание клиента.
+
+### `/admin/clients/{id}`
+- Включить/выключить клиента.
+- Создать пользователя для клиента (логин/пароль).
+- Добавить whitelist-адрес для пользователя при создании.
+- Просмотр/отзыв сертификатов.
+- Выпуск enrollment token (показывается один раз).
+
+### `/admin/whitelist`
+- Ручное добавление IP/CIDR (manual).
+- Просмотр, чей адрес (owner_type / owner_id / label).
+- Удаление записей.
+
+### `/admin/tokens`
+- Список токенов (в masked виде).
+- Отзыв неиспользованных токенов.
+
+### `/admin/settings`
+- Переключатели поведения (например enroll/login режимы).
+
+### `/admin/audit`
+- Журнал действий админа.
+
+---
+
+## 7) Как создаются учётки пользователей (пошагово)
+
+1. Войти в админку.
+2. Перейти в **Clients** → создать клиента.
+3. Открыть карточку клиента.
+4. В блоке **Users** заполнить:
+   - `Username`
+   - `Password`
+   - `User IP/CIDR`
+5. Нажать **Create user**.
+
+Результат:
+- пользователь создан,
+- IP/CIDR добавлен в whitelist с привязкой к этому пользователю.
+
+---
+
+## 8) mTLS / сертификаты — это доп. опция
+
+Да, это **необязательный модуль**.
+
+Если не планируете сейчас:
+- `MTLS_ENABLED=false`
+- `ENROLL_ENABLED=false`
+
+Обычная логин-пароль схема будет работать без enrollment/CSR.
+
+---
+
+## 9) Полезные переменные окружения
+
+- `LISTEN_PUBLIC_ADDR` — публичный адрес сервера (например `:8443`)
+- `LISTEN_ADMIN_ADDR` — адрес админки (обязательно loopback, например `127.0.0.1:9443`)
+- `PUBLIC_CERT_PATH`, `PUBLIC_KEY_PATH` — TLS для публичного сервера
+- `BOOTSTRAP_ADMIN_USER`, `BOOTSTRAP_ADMIN_PASSWORD` — первичный админ
+- `DB_DSN` — Postgres DSN (если используете postgres build)
+- `MTLS_ENABLED`, `ENROLL_ENABLED` — опции сертификатного контура
+- `CLIENT_CA_PATH`, `CA_CERT_PATH`, `CA_KEY_PATH` — пути для mTLS/enroll
+- `ENROLL_TOKEN_TTL` — TTL токенов (по умолчанию 15m)
+
+---
+
+## 10) Мини-чек после запуска
+
+1. Открывается админка на `127.0.0.1:9443`.
+2. С внешней машины админка **не открывается**.
+3. Без whitelist IP пользователь не попадает на публичные страницы.
+4. Пользователь, созданный через админку, может войти только со своего whitelisted IP.
+
