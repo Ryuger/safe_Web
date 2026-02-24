@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Settings</title>
+</head>
+<body>
+  <h1>Settings</h1>
+  <form method="POST" action="/admin/settings">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label><input type="checkbox" name="enroll_enabled" {{if .Settings.EnrollEnabled}}checked{{end}}> Enroll enabled</label><br>
+    <label><input type="checkbox" name="require_login" {{if .Settings.RequireLogin}}checked{{end}}> Require login</label><br>
+    <p>mTLS requires restart (set MTLS_ENABLED env and restart).</p>
+    <button type="submit">Save</button>
+  </form>
+  <p><a href="/admin/dashboard">Back</a></p>
+</body>
+</html>

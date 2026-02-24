@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Audit Log</title>
+</head>
+<body>
+  <h1>Audit Log</h1>
+  <ul>
+    {{range .Audit}}
+      <li>{{.CreatedAt}} - {{.Actor}} - {{.Action}} {{.TargetType}} {{.TargetID}}</li>
+    {{else}}
+      <li>No entries.</li>
+    {{end}}
+  </ul>
+  <p><a href="/admin/dashboard">Back</a></p>
+</body>
+</html>
